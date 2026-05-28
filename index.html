@@ -180,8 +180,10 @@
         📥 Upload a Vinh Giang clip (audio or video — .mp4 works)
       </label>
       <button class="ghost" id="resetBench" disabled>↺ Reset to built-in</button>
+      <button class="ghost" id="recalPaceBtn" disabled title="Re-center the pace target on the WPM measured in your last session">📐 Calibrate pace to me</button>
       <span id="refStatus" class="hint" style="margin:0;align-self:center"></span>
     </div>
+    <div id="paceNote" class="hint" style="margin-top:8px"></div>
     <div style="margin-top:14px;padding-top:14px;border-top:1px solid var(--line)">
       <div class="hint" style="margin:0 0 6px">📚 Saved &amp; pre-loaded references <span id="refLibInfo" style="color:var(--mut2)"></span></div>
       <div class="row">
@@ -332,7 +334,7 @@ const USE_CASES = {
     label:"Engaging presentation", emoji:"🎤",
     note:"Vinh Giang's general framework — engaging, dynamic, deliberate.",
     targets:{
-      pace:{lo:130,hi:160,hLo:90,hHi:195},
+      pace:{lo:150,hi:190,hLo:105,hHi:240},
       volume:{lo:10,hi:24,hLo:4,hHi:40},
       melodyRange:{lo:7,hi:18,hLo:2,hHi:32},
       melodyStd:{lo:2.5,hi:7,hLo:0.5,hHi:13},
@@ -346,7 +348,7 @@ const USE_CASES = {
     label:"Keynote", emoji:"🎯",
     note:"Slower, more authoritative — TED-style. Long deliberate pauses, wide pitch for emotion.",
     targets:{
-      pace:{lo:110,hi:145,hLo:80,hHi:175},
+      pace:{lo:130,hi:170,hLo:95,hHi:215},
       volume:{lo:12,hi:26,hLo:5,hHi:42},
       melodyRange:{lo:8,hi:20,hLo:3,hHi:34},
       melodyStd:{lo:3,hi:8,hLo:0.8,hHi:14},
@@ -360,7 +362,7 @@ const USE_CASES = {
     label:"Sales pitch", emoji:"💼",
     note:"Energetic and persuasive — faster pace, wider volume swings, strategic pauses on value points.",
     targets:{
-      pace:{lo:140,hi:175,hLo:100,hHi:205},
+      pace:{lo:165,hi:210,hLo:120,hHi:255},
       volume:{lo:12,hi:28,hLo:5,hHi:44},
       melodyRange:{lo:7,hi:18,hLo:2,hHi:32},
       melodyStd:{lo:2.5,hi:7,hLo:0.5,hHi:13},
@@ -374,7 +376,7 @@ const USE_CASES = {
     label:"Casual / video", emoji:"🎧",
     note:"Conversational and natural — faster, less dramatic pauses, relaxed dynamics. Podcast / vlog feel.",
     targets:{
-      pace:{lo:150,hi:185,hLo:110,hHi:220},
+      pace:{lo:175,hi:225,hLo:130,hHi:275},
       volume:{lo:8,hi:22,hLo:3,hHi:38},
       melodyRange:{lo:6,hi:16,hLo:2,hHi:30},
       melodyStd:{lo:2,hi:6,hLo:0.4,hHi:12},
@@ -917,9 +919,12 @@ async function decodeViaMediaElement(blob){
   });
 }
 
+let lastMetrics = null;   // most-recent analysis, used by the personal-pace recalibration
 function runAnalysis(metrics, source, extra){
   if(metrics.error){ toast(metrics.error); return; }
   Object.assign(metrics, extra||{});
+  lastMetrics = metrics;
+  $("#recalPaceBtn").disabled = false;
   const S=scoreMetrics(metrics);
   renderResults(metrics, S);
   const sc = getScript();
@@ -927,7 +932,8 @@ function runAnalysis(metrics, source, extra){
     t:Date.now(), overall:S.overall, dims:{...S.dims}, src:source,
     useCase: currentUseCase,
     script: sc.id,
-    benchmark: refMetrics? "ref-clip" : "built-in"
+    benchmark: refMetrics? "ref-clip" : "built-in",
+    wpm: Math.round(metrics.wpm || 0)
   });
 }
 
@@ -965,6 +971,7 @@ function applyReference(m, name){
   const bodyBit = m.body? ` · body activity ${fmt(m.body.gestureActivity,2)}` : "";
   $("#benchInfo").innerHTML=`Benchmark = <b>${name}</b> · ${fmt(m.wpm,0)} wpm · pitch range ${fmt(m.pitchRangeSemi,1)} st · pause ratio ${fmt(m.pauseRatio*100,0)}% · dynamics ${fmt(m.dynamicDb,1)} dB${bodyBit}`;
   $("#resetBench").disabled=false;
+  refreshPaceNote();
 }
 $("#resetBench").addEventListener("click", ()=>{
   TARGETS=defaultTargets(); refMetrics=null; refScores=null;
@@ -977,7 +984,22 @@ function applyUseCaseLabel(){
   $("#benchTag").className="tag built";
   $("#benchTag").textContent = `Built-in: ${uc.label}`;
   $("#benchInfo").textContent = uc.note;
+  refreshPaceNote();
 }
+function refreshPaceNote(){
+  const p=TARGETS.pace;
+  $("#paceNote").innerHTML = `🎯 current pace target · <b>${Math.round(p.lo)}–${Math.round(p.hi)} wpm</b> · acceptable range <b>${Math.round(p.hLo)}–${Math.round(p.hHi)}</b>`;
+}
+$("#recalPaceBtn").addEventListener("click", ()=>{
+  if(!lastMetrics){ toast("Record or upload once first, then calibrate."); return; }
+  const w = lastMetrics.wpm;
+  if(!isFinite(w) || w<60){ toast("Last session didn't yield a reliable WPM."); return; }
+  // band ±12% of personal rate; hard limits ±35%/+45%
+  TARGETS.pace = { lo: w*0.88, hi: w*1.12, hLo: w*0.65, hHi: w*1.45 };
+  refreshPaceNote();
+  $("#refStatus").textContent = `✓ pace target re-centered on ${Math.round(w)} wpm (your last session).`;
+  toast(`Pace target centered on ${Math.round(w)} wpm.`);
+});
 $("#useCaseSeg").addEventListener("click", e=>{
   const b=e.target.closest("button[data-uc]"); if(!b) return;
   [...$("#useCaseSeg").children].forEach(x=>x.classList.toggle("on", x===b));
