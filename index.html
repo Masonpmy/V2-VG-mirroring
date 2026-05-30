@@ -180,7 +180,6 @@
         📥 Upload a Vinh Giang clip (audio or video — .mp4 works)
       </label>
       <button class="ghost" id="resetBench" disabled>↺ Reset to built-in</button>
-      <button class="ghost" id="recalPaceBtn" disabled title="Re-center the pace target on the WPM measured in your last session">📐 Calibrate pace to me</button>
       <span id="refStatus" class="hint" style="margin:0;align-self:center"></span>
     </div>
     <div id="paceNote" class="hint" style="margin-top:8px"></div>
@@ -279,6 +278,29 @@
     <div id="transcriptWrap" class="hidden" style="margin-top:16px">
       <h2 style="font-size:13px;color:var(--mut)">Detected transcript &amp; filler words</h2>
       <div id="transcript" style="font-size:13.5px;color:var(--mut);background:#0e131c;border:1px solid var(--line);border-radius:11px;padding:12px 14px"></div>
+    </div>
+  </section>
+
+  <!-- REVIEW -->
+  <section class="card hidden" id="reviewCard">
+    <h2>5 · Review your clip</h2>
+    <p class="hint">Play back what the analyser actually heard / saw. Useful for catching what the numbers can't.</p>
+    <div class="seg" id="reviewSeg" style="margin-bottom:14px">
+      <button data-rv="audio" class="on">🎧 Auditory review · audio only</button>
+      <button data-rv="video">👁 Visual review · video muted</button>
+    </div>
+    <div id="reviewAudio">
+      <audio id="reviewAudioEl" controls preload="metadata" style="width:100%;border-radius:11px;background:#0e131c"></audio>
+      <div class="row" style="margin-top:10px;align-items:center">
+        <button id="dlClip" class="ghost">⬇ Download clip</button>
+        <span class="hint" id="clipMeta" style="margin:0"></span>
+      </div>
+    </div>
+    <div id="reviewVideo" class="hidden">
+      <video id="reviewVideoEl" controls muted playsinline
+        style="width:100%;max-height:480px;background:#000;border-radius:11px;display:block"></video>
+      <div class="hint" style="margin-top:8px">Audio is muted — watch your gestures, posture, hand height and sway with no voice distraction.</div>
+      <div id="noVideoMsg" class="hint hidden" style="margin-top:10px;color:var(--warn)">⚠ This clip is audio-only — switch to auditory review.</div>
     </div>
   </section>
 
@@ -410,7 +432,7 @@ const SCRIPTS = [
    text:"So I was about to give my first big talk — three hundred people in the room, lights down, mic on — / and right before I walked out, my mentor pulled me aside. / He said one thing: / don't perform. / Just be a person. // At first I thought, that's it? // But the moment I walked on stage and remembered those words, / everything changed. / I stopped trying to sound impressive — / and started actually being heard."}
 ];
 function targetsFromRef(m){ const f=Math.max; return {
-  pace:        {lo:m.wpm*0.9, hi:m.wpm*1.1, hLo:m.wpm*0.6, hHi:m.wpm*1.45},
+  pace:        {lo:m.wpm*0.82, hi:m.wpm*1.18, hLo:m.wpm*0.55, hHi:m.wpm*1.55},
   volume:      {lo:m.dynamicDb*0.8, hi:m.dynamicDb*1.25, hLo:m.dynamicDb*0.4, hHi:m.dynamicDb*1.9},
   melodyRange: {lo:m.pitchRangeSemi*0.8, hi:m.pitchRangeSemi*1.25, hLo:m.pitchRangeSemi*0.4, hHi:f(m.pitchRangeSemi*2,8)},
   melodyStd:   {lo:m.pitchStdSemi*0.8, hi:m.pitchStdSemi*1.35, hLo:m.pitchStdSemi*0.3, hHi:f(m.pitchStdSemi*2.5,4)},
@@ -515,14 +537,32 @@ async function analyze(audioBuffer, onProgress){
   const pausesPerMin=pauses.length/(duration/60);
   const pauseAvg=pauses.length? pauseTotal/pauses.length : 0;
 
-  /* ---- pace (syllable-nuclei estimate from envelope) ---- */
+  /* ---- pace (syllable-nuclei estimate from envelope) ----
+     Detect both clear amplitude peaks AND "dip-rise" events between connected
+     syllables. Fast speakers slur syllables together; without the dip detector
+     the old method under-counted them by 20-40%, which made anyone above ~150
+     wpm look slow. */
   const env=new Float32Array(nFrames);
   for(let f=0;f<nFrames;f++){ let a=0,c=0; for(let k=-1;k<=1;k++){const g=f+k; if(g>=0&&g<nFrames){a+=rms[g];c++;}} env[f]=a/c; }
-  const eFloor=pct(env,0.05), ePeak=pct(env,0.95), eThr=eFloor+0.18*(ePeak-eFloor);
-  let syll=0, lastPeak=-99; const minGap=Math.round(0.16*fps);
-  for(let f=1;f<nFrames-1;f++){ if(env[f]>eThr && env[f]>env[f-1] && env[f]>=env[f+1] && f-lastPeak>=minGap){ syll++; lastPeak=f; } }
+  const eFloor=pct(env,0.05), ePeak=pct(env,0.95);
+  const eThr=eFloor+0.10*(ePeak-eFloor);                  // lower threshold = catches softer syllables
+  const dipDelta=0.06*(ePeak-eFloor);                      // minimum dip depth between two syllables
+  const minGap=Math.max(2, Math.round(0.11*fps));          // ≈9 syll/s ceiling — accommodates fast English speakers
+  let syll=0, lastPeak=-99, lastPeakVal=0, lastMin=eFloor;
+  for(let f=1;f<nFrames-1;f++){
+    const v=env[f];
+    if(v<lastMin) lastMin=v;
+    const isPeak = v>eThr && v>=env[f-1] && v>=env[f+1];
+    if(!isPeak) continue;
+    if(f-lastPeak>=minGap){
+      // either far enough OR there was a clear dip since the last peak
+      if(lastPeak<0 || (v - lastMin)>=dipDelta){
+        syll++; lastPeak=f; lastPeakVal=v; lastMin=v;
+      }
+    }
+  }
   const syllPerSec=syll/duration;
-  const wpmEst=syllPerSec/1.4*60;
+  const wpmEst=syllPerSec/1.45*60;                         // 1.45 syll/word — better fit for fast English
 
   return {
     duration, meanDb, dynamicDb, volStdDb,
@@ -919,12 +959,19 @@ async function decodeViaMediaElement(blob){
   });
 }
 
-let lastMetrics = null;   // most-recent analysis, used by the personal-pace recalibration
+let lastMetrics = null;       // most-recent metrics, for trend + (future) calibration
+let lastUserBlob  = null;     // most-recent recorded/uploaded clip — for the Review card
+let lastUserName  = null;
+let lastReviewUrl = null;     // tracks blob: URL so we can revoke previous ones
+function setLastUserClip(blob, name){
+  lastUserBlob = blob;
+  lastUserName = name || (blob && blob.type && blob.type.startsWith("video") ? "my-clip.mp4" : "my-recording.webm");
+  showReview();
+}
 function runAnalysis(metrics, source, extra){
   if(metrics.error){ toast(metrics.error); return; }
   Object.assign(metrics, extra||{});
   lastMetrics = metrics;
-  $("#recalPaceBtn").disabled = false;
   const S=scoreMetrics(metrics);
   renderResults(metrics, S);
   const sc = getScript();
@@ -990,16 +1037,6 @@ function refreshPaceNote(){
   const p=TARGETS.pace;
   $("#paceNote").innerHTML = `🎯 current pace target · <b>${Math.round(p.lo)}–${Math.round(p.hi)} wpm</b> · acceptable range <b>${Math.round(p.hLo)}–${Math.round(p.hHi)}</b>`;
 }
-$("#recalPaceBtn").addEventListener("click", ()=>{
-  if(!lastMetrics){ toast("Record or upload once first, then calibrate."); return; }
-  const w = lastMetrics.wpm;
-  if(!isFinite(w) || w<60){ toast("Last session didn't yield a reliable WPM."); return; }
-  // band ±12% of personal rate; hard limits ±35%/+45%
-  TARGETS.pace = { lo: w*0.88, hi: w*1.12, hLo: w*0.65, hHi: w*1.45 };
-  refreshPaceNote();
-  $("#refStatus").textContent = `✓ pace target re-centered on ${Math.round(w)} wpm (your last session).`;
-  toast(`Pace target centered on ${Math.round(w)} wpm.`);
-});
 $("#useCaseSeg").addEventListener("click", e=>{
   const b=e.target.closest("button[data-uc]"); if(!b) return;
   [...$("#useCaseSeg").children].forEach(x=>x.classList.toggle("on", x===b));
@@ -1023,6 +1060,7 @@ $("#modeSeg").addEventListener("click", e=>{
 /* ---- upload performance ---- */
 $("#perfFile").addEventListener("change", async (e)=>{
   const f=e.target.files[0]; if(!f) return;
+  setLastUserClip(f, f.name);
   $("#upStatus").innerHTML='<span class="spin"></span> analysing…';
   showProgress("decoding clip…");
   try{
@@ -1072,6 +1110,7 @@ function stopRec(){ if(mediaRec&&mediaRec.state!=="inactive") mediaRec.stop(); s
 async function onRecStop(){
   const dur=(Date.now()-recStart)/1000;
   const blob=new Blob(chunks,{type:chunks[0]?.type||"audio/webm"});
+  setLastUserClip(blob, `recording-${new Date().toISOString().slice(0,19).replace(/[:T]/g,"-")}.webm`);
   $("#recHint").innerHTML='<span class="spin"></span> analysing your recording…';
   showProgress("decoding recording…");
   try{
@@ -1247,6 +1286,55 @@ $("#useAvgBtn").addEventListener("click", async ()=>{
   $("#refStatus").textContent=`✓ benchmark = average of ${saved.length} saved references.`;
   toast("Using averaged benchmark.");
 });
+
+/* ============================================================
+   REVIEW CARD — auditory + visual playback of the user's clip
+   ============================================================ */
+function showReview(){
+  if(!lastUserBlob) return;
+  if(lastReviewUrl) URL.revokeObjectURL(lastReviewUrl);
+  lastReviewUrl = URL.createObjectURL(lastUserBlob);
+  const a=$("#reviewAudioEl"), v=$("#reviewVideoEl");
+  a.src = lastReviewUrl;
+  v.src = lastReviewUrl;
+  const type=lastUserBlob.type||"";
+  const hasVideo = type.startsWith("video") || /\.(mp4|mov|webm|mkv)$/i.test(lastUserName||"");
+  $("#noVideoMsg").classList.toggle("hidden", hasVideo);
+  $("#reviewVideoEl").classList.toggle("hidden", !hasVideo);
+  $("#reviewSeg").querySelector('[data-rv="video"]').disabled = !hasVideo;
+  const sizeMB = (lastUserBlob.size/1048576).toFixed(1);
+  $("#clipMeta").textContent = `${lastUserName||"clip"} · ${type||"audio/webm"} · ${sizeMB} MB`;
+  $("#reviewCard").classList.remove("hidden");
+}
+$("#reviewSeg").addEventListener("click", e=>{
+  const b=e.target.closest("button[data-rv]"); if(!b || b.disabled) return;
+  [...$("#reviewSeg").children].forEach(x=>x.classList.toggle("on", x===b));
+  const isAudio = b.dataset.rv==="audio";
+  $("#reviewAudio").classList.toggle("hidden", !isAudio);
+  $("#reviewVideo").classList.toggle("hidden", isAudio);
+  if(isAudio){ $("#reviewVideoEl").pause(); } else { $("#reviewAudioEl").pause(); }
+});
+$("#dlClip").addEventListener("click", ()=>{
+  if(!lastUserBlob) return;
+  const a=document.createElement("a"); a.href=URL.createObjectURL(lastUserBlob);
+  a.download=lastUserName||"my-clip"; document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(a.href),1000);
+});
+
+/* extend refreshRefLib to auto-apply the newest saved ref as benchmark on startup */
+const _refreshRefLibInner = refreshRefLib;
+refreshRefLib = async function(selectId){
+  await _refreshRefLibInner(selectId);
+  if(!refMetrics){
+    const saved=(await dbAll().catch(()=>[])).filter(r=>r.metrics).sort((a,b)=>b.savedAt-a.savedAt);
+    if(saved.length){
+      const newest = saved[0];
+      applyReference(newest.metrics, newest.label||newest.name);
+      $("#refLibSel").value = newest.id;
+      $("#refStatus").textContent = `✓ auto-using saved reference: ${newest.label||newest.name}`;
+    }
+  }
+};
 
 /* ---- init ---- */
 applyUseCaseLabel();
