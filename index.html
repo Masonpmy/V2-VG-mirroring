@@ -176,8 +176,8 @@
     </div>
     <div class="row" style="margin-top:12px">
       <label class="file-label">
-        <input type="file" id="refFile" accept="audio/*,video/*,.mp4,.m4a,.mov,.webm,.mp3,.wav" />
-        📥 Upload a Vinh Giang clip (audio or video — .mp4 works)
+        <input type="file" id="refFile" accept="audio/*,video/*,.mp4,.m4a,.mov,.webm,.mp3,.wav,.aac,.ogg" />
+        📥 Upload a Vinh Giang clip (.mp4, .mov, .webm, audio file…)
       </label>
       <button class="ghost" id="resetBench" disabled>↺ Reset to built-in</button>
       <span id="refStatus" class="hint" style="margin:0;align-self:center"></span>
@@ -233,8 +233,8 @@
     <!-- upload mode -->
     <div id="upPane" class="hidden">
       <label class="file-label">
-        <input type="file" id="perfFile" accept="audio/*,video/*,.mp4,.m4a,.mov,.webm,.mp3,.wav" />
-        📂 Choose a clip of you speaking (audio or .mp4 video)
+        <input type="file" id="perfFile" accept="audio/*,video/*,.mp4,.m4a,.mov,.webm,.mp3,.wav,.aac,.ogg" />
+        📂 Choose a clip of you speaking (.mp4, .mov, .webm, audio file…)
       </label>
       <span id="upStatus" class="hint" style="margin-left:10px"></span>
     </div>
@@ -959,6 +959,15 @@ async function decodeViaMediaElement(blob){
   });
 }
 
+/* video detection that's robust to empty / non-standard MIME types (Windows
+   sometimes hands .mov files to the browser without a video/quicktime MIME) */
+function isVideoFile(file){
+  const t=(file&&file.type||"").toLowerCase();
+  if(t.startsWith("video")) return true;
+  const n=(file&&file.name||"").toLowerCase();
+  return /\.(mp4|mov|m4v|webm|mkv|avi|qt)$/.test(n);
+}
+
 let lastMetrics = null;       // most-recent metrics, for trend + (future) calibration
 let lastUserBlob  = null;     // most-recent recorded/uploaded clip — for the Review card
 let lastUserName  = null;
@@ -994,7 +1003,7 @@ $("#refFile").addEventListener("change", async (e)=>{
     setProgress(0.05,"decoded — analysing voice…");
     const m=await analyze(buf,(p,l)=>setProgress(0.05+p*0.65,l));
     if(m.error){ $("#refStatus").textContent=m.error; hideProgress(); return; }
-    if($("#bodyToggle").checked && (f.type||"").startsWith("video")){
+    if($("#bodyToggle").checked && isVideoFile(f)){
       setProgress(0.7,"analysing body language…");
       const body=await analyseBody(f,(p,l)=>setProgress(0.7+p*0.3,l));
       if(body && !body.error) m.body=body;
@@ -1008,7 +1017,7 @@ $("#refFile").addEventListener("change", async (e)=>{
     }catch(err){ console.warn("IndexedDB save failed:",err); }
     $("#refStatus").textContent="✓ reference set & saved — your scores now mirror this clip.";
     toast("Reference clip analysed and saved.");
-  }catch(err){ console.error(err); $("#refStatus").textContent="Couldn't decode that file. Try .mp3, .wav, or a different .mp4."; }
+  }catch(err){ console.error(err); $("#refStatus").textContent="Couldn't decode that file. If it's a .mov recorded on iPhone, it may be HEVC (H.265) — open it in QuickTime or Photos and export / convert to .mp4 (H.264). Otherwise try .mp3, .wav, or a different .mp4."; }
   hideProgress();
 });
 
@@ -1068,13 +1077,13 @@ $("#perfFile").addEventListener("change", async (e)=>{
     setProgress(0.05,"decoded — analysing voice…");
     const m=await analyze(buf,(p,l)=>setProgress(0.05+p*0.65,l));
     if(m.error){ $("#upStatus").textContent=m.error; hideProgress(); return; }
-    if($("#bodyToggle").checked && (f.type||"").startsWith("video")){
+    if($("#bodyToggle").checked && isVideoFile(f)){
       setProgress(0.7,"analysing body language…");
       const body=await analyseBody(f,(p,l)=>setProgress(0.7+p*0.3,l));
       if(body && !body.error) m.body=body;
     }
     $("#upStatus").textContent="✓ done"; runAnalysis(m,"upload");
-  }catch(err){ console.error(err); $("#upStatus").textContent="Couldn't decode that file. Try .mp3, .wav, or a different .mp4."; }
+  }catch(err){ console.error(err); $("#upStatus").textContent="Couldn't decode that file. If it's a .mov recorded on iPhone, it may be HEVC (H.265) — open it in QuickTime or Photos and export / convert to .mp4 (H.264). Otherwise try .mp3, .wav, or a different .mp4."; }
   hideProgress();
 });
 
@@ -1298,7 +1307,7 @@ function showReview(){
   a.src = lastReviewUrl;
   v.src = lastReviewUrl;
   const type=lastUserBlob.type||"";
-  const hasVideo = type.startsWith("video") || /\.(mp4|mov|webm|mkv)$/i.test(lastUserName||"");
+  const hasVideo = isVideoFile({type, name:lastUserName||""});
   $("#noVideoMsg").classList.toggle("hidden", hasVideo);
   $("#reviewVideoEl").classList.toggle("hidden", !hasVideo);
   $("#reviewSeg").querySelector('[data-rv="video"]').disabled = !hasVideo;
