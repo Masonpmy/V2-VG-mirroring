@@ -237,6 +237,11 @@
         📂 Choose a clip of you speaking (.mp4, .mov, .webm, audio file…)
       </label>
       <span id="upStatus" class="hint" style="margin-left:10px"></span>
+      <div id="upError" class="hidden" style="margin-top:12px;padding:12px 14px;background:#ff7a7a14;border:1px solid #ff7a7a44;border-radius:11px;color:#ffcfcf;font-size:13px;white-space:pre-wrap"></div>
+      <div id="codecProbe" class="hidden" style="margin-top:12px">
+        <div class="hint" style="margin-bottom:6px">🔍 Codec diagnostic — if this preview is black or silent, your browser can't decode the codec:</div>
+        <video id="codecProbeEl" controls muted playsinline style="width:100%;max-height:240px;background:#000;border-radius:11px;display:block"></video>
+      </div>
     </div>
 
     <label style="display:flex;align-items:center;gap:8px;margin-top:14px;color:var(--mut);font-size:13px;cursor:pointer">
@@ -912,12 +917,24 @@ function ac(){ actx=actx||new (window.AudioContext||window.webkitAudioContext)()
    Path 2 (fallback for stubborn .mp4/.mov files): load into a hidden <video>, capture via
    captureStream() through an OfflineAudioContext — extracts the audio track from the container. */
 async function blobToBuffer(blob){
+  let err1=null;
   try{
     const arr=await blob.arrayBuffer();
     return await ac().decodeAudioData(arr.slice(0));
   }catch(err){
-    console.warn("decodeAudioData failed, trying video-element fallback:", err);
+    err1=err; console.warn("decodeAudioData failed:", err);
+  }
+  try{
     return await decodeViaMediaElement(blob);
+  }catch(err2){
+    console.warn("MediaElement decode also failed:", err2);
+    const sizeMB=((blob.size||0)/1048576).toFixed(1);
+    const detail = `Tried two decoders on ${blob.type||"?"} (${sizeMB} MB).\n` +
+                   `· decodeAudioData → ${err1?.message||err1||"unknown"}\n` +
+                   `· video element   → ${err2?.message||err2||"unknown"}`;
+    console.error(detail);
+    const e = new Error(`Couldn't decode that ${blob.type||"file"}. Most common cause for .mov from iPhone/iPad: HEVC (H.265) video — Chrome on Windows can't read it. Convert to .mp4 (H.264) using Windows Photos: right-click the file → Open with → Photos → "Edit & Create" → "Save a copy". ${detail}`);
+    e.detail=detail; throw e;
   }
 }
 
@@ -928,7 +945,7 @@ async function decodeViaMediaElement(blob){
     el.preload="auto"; el.muted=true; el.crossOrigin="anonymous"; el.src=url;
     el.addEventListener("error", ()=>{ URL.revokeObjectURL(url); reject(new Error("Browser couldn't read this file. Try Chrome, or convert to .mp3/.wav.")); });
     el.addEventListener("loadedmetadata", async ()=>{
-      const dur=Math.min(el.duration||120, 120);
+      const dur=el.duration;
       if(!isFinite(dur)||dur<=0){ URL.revokeObjectURL(url); return reject(new Error("Couldn't read duration from file.")); }
       try{
         const sampleRate=44100;
@@ -1069,6 +1086,7 @@ $("#modeSeg").addEventListener("click", e=>{
 /* ---- upload performance ---- */
 $("#perfFile").addEventListener("change", async (e)=>{
   const f=e.target.files[0]; if(!f) return;
+  $("#upError").classList.add("hidden"); $("#codecProbe").classList.add("hidden");
   setLastUserClip(f, f.name);
   $("#upStatus").innerHTML='<span class="spin"></span> analysing…';
   showProgress("decoding clip…");
@@ -1083,7 +1101,17 @@ $("#perfFile").addEventListener("change", async (e)=>{
       if(body && !body.error) m.body=body;
     }
     $("#upStatus").textContent="✓ done"; runAnalysis(m,"upload");
-  }catch(err){ console.error(err); $("#upStatus").textContent="Couldn't decode that file. If it's a .mov recorded on iPhone, it may be HEVC (H.265) — open it in QuickTime or Photos and export / convert to .mp4 (H.264). Otherwise try .mp3, .wav, or a different .mp4."; }
+  }catch(err){
+    console.error(err);
+    $("#upStatus").textContent="❌ decode failed — see details below";
+    $("#upError").textContent = err.message || String(err);
+    $("#upError").classList.remove("hidden");
+    if(isVideoFile(f)){
+      const probe=$("#codecProbeEl");
+      probe.src = URL.createObjectURL(f);
+      $("#codecProbe").classList.remove("hidden");
+    }
+  }
   hideProgress();
 });
 
